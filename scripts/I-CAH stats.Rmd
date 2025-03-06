@@ -1,0 +1,260 @@
+---
+title: "I-CAH stats"
+author: "R.Welch"
+date: "2025-03-05"
+output: html_document
+---
+
+CODE TO BE USED ALONGSIDE 'CLEANED SCRIPT'
+
+This code is used to provide stats on the data extracted from I-CAH.
+- Three time frames are wanted: Nov22-23, Nov23-24, Nov24-Feb25
+
+Want to create a minimal dataset.
+
+For each time frame, and per centre, this code will provide the following:
+- missing data (% and number of patients) for each element of the minimal dataset (outlined on CaHASE2 webpage: https://www.endocrinology.org/clinical-practice/research-projects/cahase-2/)
+- How many patients have >1 entry (and create subset data frame to show these patients/records)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+libraries
+```{r : reading libraries, include= FALSE}
+packages <- c("tidyverse", "readxl", "dplyr", "magrittr", "mixtools", "emmeans", "readr","data.table", "lubridate", "ggplot2", "skimr", "ggstatsplot","summarytools", "knitr", "here", "ggthemes", "Amelia", "tidyr", "naniar", "stringr", "janitor")
+
+lapply(packages, library, character.only = TRUE)
+```
+
+Reading in data.
+```{r : reading in data}
+participants <- read.csv("C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/data/Core only 24.02.2025.csv", header=T, na.strings= c("", "NA"))
+# participants$Date...CAH.Longitudinal.Data <- as.Date(participants$Date...CAH.Longitudinal.Data, format = "%d/%m/%Y")
+
+medication <- read.csv("C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/data/Glucocorticoids Data 24.02.2025.csv", header=T, na.strings= c("", "NA"))
+medication <- remove_empty(medication, c("cols"), cutoff = 1)
+# medication$assessment_date <- as.Date(medication$assessment_date, format = "%d/%m/%Y")
+
+labs <- read.csv("C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/data/Labs data 24.02.2025.csv", header=T, na.strings= c("", "NA"))
+# labs$assessment_date <- as.Date(labs$assessment_date, format = "%d/%m/%Y")
+
+longitudinal <- read.csv("C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/data/Longitudinal data 24.02.2025.csv", header=T, na.strings= c("", "NA"))
+```
+
+Need to merge participants and longitudinal data frames
+```{r : merging data frames}
+participants_longitudinal <- merge(participants, longitudinal, by = "CO.ID",
+              all = TRUE)
+
+participants_longitudinal$Date.of.Assessment <- as.Date(participants_longitudinal$Date.of.Assessment, format = "%d/%m/%Y")
+
+#make unique identifier
+participants_longitudinal$CO.ID_assessment_date <- paste0(participants_longitudinal$CO.ID, participants_longitudinal$Date.of.Assessment)
+
+write.csv(participants_longitudinal, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/data/participants_longitudinal.csv", row.names = F)
+```
+
+Before you start analysing data, remove any duplicated entries.
+Duplicated entries occur when data has been entered twice. Usually with one or two fields differing between entries, indicating that one of the entries is incorrect and has subsequently been 'replaced' by a correct entry. You can't tell which entry is the correct one, so for safety we will remove all duplicated entries.
+
+
+*********************************
+*********************************
+------Basic stats------
+
+```{r : list of centres}
+centres <-as.data.frame(unique(participants_longitudinal$Centre.ID.x))
+centres <- centres %>%
+  rename("Centre ID" = "unique(participants_longitudinal$Centre.ID.x)")
+
+print("There are")
+length(centres$`Centre ID`)
+print("centres")
+```
+
+```{r : patients per centre}
+patients_per_centre <- participants_longitudinal %>%
+  group_by(Centre.ID.x) %>%
+  summarise(n_unique(CO.ID)) %>%
+  as.data.frame() %>%
+   rename("number of patients" = "n_unique(CO.ID)")
+```
+
+```{r : visits per centre}
+visits_per_centre <- participants_longitudinal %>%
+  group_by(Centre.ID.x) %>%
+  summarise(n = n()) %>%
+  rename("number of visits" = "n")
+```
+
+```{r : combining patient and visit stats}
+centre_stats <- full_join(patients_per_centre, visits_per_centre, by = "Centre.ID.x")
+
+write.csv(centre_stats, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/centre_stats.csv", row.names = F)
+```
+
+
+*********************************
+*********************************
+------Making large dataset------
+Include all data from lonitudinal frame, join medication and biomarker info.
+Medication will come from 'meds_wide'.
+Biomarkers will come from 'labs_wide'.
+Let's just read in widened frames generated from 'cleaned script' processing code.
+```{r : reading in meds_wide}
+meds_wide <- read.csv("C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/meds_wide.csv", header=T, na.strings= c("", "NA"))
+```
+
+
+```{r}
+# format date
+meds_wide$Date.of.Assessment_1 <- as.Date(meds_wide$Date.of.Assessment_1, format = "%Y-%m-%d")
+
+# let's add unique identifier
+meds_wide$CO.ID_assessment_date <- paste0(meds_wide$CO.ID, meds_wide$Date.of.Assessment_1)
+
+# identify and remove any duplicates
+med_duplicates <- as.data.frame(freq(meds_wide$CO.ID_assessment_date))
+med_duplicates <- rownames_to_column(med_duplicates, var="CO.ID_assessment_date")
+med_duplicates <- med_duplicates[med_duplicates$CO.ID_assessment_date != c("Total", "<NA>"),]
+med_duplicates <- med_duplicates[-c(3:6)]
+med_duplicates <- med_duplicates %>%
+  filter(Freq>1)
+
+med_to_remove <- med_duplicates$CO.ID_assessment_date
+meds_wide_no_duplicates <- subset(meds_wide, !CO.ID_assessment_date %in% med_to_remove)
+
+# all frequencies here should be 1
+med_freq_check <- as.data.frame(freq(meds_wide_no_duplicates$CO.ID_assessment_date))
+```
+
+In meds_wide, some medicine entries are 'other'. This needs to be rectified. I did this by hand in excel for now and will read in the resultant csv file here to use.
+```{r}
+# instances of 'other' in medicine names need to be rectified. I have done this manually in excel for now.
+
+adjusted_medication_names <- read.csv("C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/data/adjusted_medication_names.csv", header=T, na.strings= c("", "NA"))
+adjusted_medication_names$Date <- as.Date(adjusted_medication_names$Date, format = "%d/%m/%Y")
+adjusted_medication_names$CO.ID_assessment_date <- paste0(adjusted_medication_names$CO.ID, adjusted_medication_names$Date)
+
+# now need to link to meds_wide_no_duplicates
+meds_wide_adj <- left_join(meds_wide_no_duplicates, adjusted_medication_names, by = c("CO.ID_assessment_date"))
+
+# now let's tidy up the columns
+# replace other with actual medication
+meds_wide_adj$Medicine_1.x <- meds_wide_adj$Medicine_1.y
+meds_wide_adj$Medicine_2.x <- meds_wide_adj$Medicine_2.y
+meds_wide_adj$Medicine_3.x <- meds_wide_adj$Medicine_3.y  
+meds_wide_adj$Medicine_4.x <- meds_wide_adj$Medicine_4.y
+```
+
+
+From lab frame, we just need specific CAH biomarkers (17-OHP, andro, testosterone, glucose, and plasma renin).
+I'll read in CAH_biomarkers from 'cleaned script' outputs to save time here, and I'll call it 'biomarkers' so it doesn't get confusing.
+```{r : reading in lab data}
+biomarkers <- read.csv("C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/CAH_biomarkers.csv", header=T, na.strings= c("", "NA"))
+
+# format date
+biomarkers$Date <- as.Date(biomarkers$Date, format = "%d/%m/%Y")
+
+# add unique identifier
+biomarkers$CO.ID_assessment_date <- paste0(biomarkers$CO.ID, biomarkers$Date)
+
+# identify and remove any duplicates
+biomarker_duplicates <- as.data.frame(freq(biomarkers$CO.ID_assessment_date))
+biomarker_duplicates <- rownames_to_column(biomarker_duplicates, var="CO.ID_assessment_date")
+biomarker_duplicates <- biomarker_duplicates[biomarker_duplicates$CO.ID_assessment_date != c("Total", "<NA>"),]
+biomarker_duplicates <- biomarker_duplicates[-c(3:6)]
+biomarker_duplicates <- biomarker_duplicates %>%
+  filter(Freq>1)
+
+biomarkers_to_remove <- biomarker_duplicates$CO.ID_assessment_date
+biomarkers_no_duplicates <- subset(biomarkers, !CO.ID_assessment_date %in% biomarkers_to_remove)
+
+# all frequencies here should be 1
+biomarker_freq_check <- as.data.frame(freq(biomarkers_no_duplicates$CO.ID_assessment_date))
+```
+
+Let's now join meds_wide and biomarkers to minimal dataset.
+The length of minimal data set should NOT INCREASE upon joining.
+```{r : joining meds_wide and minimal dataset}
+all_data <- left_join(participants_longitudinal, meds_wide_adj, by = c("CO.ID_assessment_date"))
+all_data <- left_join(all_data, biomarkers_no_duplicates, by = c("CO.ID_assessment_date"))
+
+write.csv(all_data, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data.csv", row.names = FALSE, na = "")
+```
+
+Now we'll split all_data into the four timeframes
+```{r}
+all_data_Feb25_Nov24 <- all_data %>%
+  filter(Date.of.Assessment <= "2025-07-02"  & Date.of.Assessment > "2024-01-11")
+write.csv(all_data_Feb25_Nov24, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/all_data_Feb25_Nov24.csv", row.names = FALSE, na = "")
+
+all_data_Nov24_Nov23 <- all_data %>%
+  filter(Date.of.Assessment <= "2024-01-11"  & Date.of.Assessment > "2023-01-11")
+write.csv(all_data_Nov24_Nov23, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/all_data_Nov24_Nov23.csv", row.names = FALSE, na = "")
+
+all_data_Nov23_Nov22 <- all_data %>%
+  filter(Date.of.Assessment <= "2023-01-11"  & Date.of.Assessment > "2022-01-11")
+write.csv(all_data_Nov23_Nov22, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/all_data_Nov23_Nov22.csv", row.names = FALSE, na = "")
+
+all_data_before_Nov22 <- all_data %>%
+  filter(Date.of.Assessment >= "2022-01-11")
+write.csv(all_data_before_Nov22, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/all_data_before_Nov22.csv", row.names = FALSE, na = "")
+```
+
+
+To determine data completeness, add in % missing. The value here represents the % of data which is MISSING/EMPTY for each column.
+0 = NONE MISSING, 1 = ALL MISSING.
+```{r : percent missing}
+pcntMissing <- function(col) length(col[col == ""])/length(col)
+
+missing_data_per_centre <- all_data %>%
+  group_by(Centre.ID.x) %>%
+  summarise(across(everything(), pcntMissing)) %>%
+  round(., digits = 2)
+write.csv(missing_data_per_centre, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/missing_data_per_centre.csv", row.names = FALSE, na = "")
+
+missing_data_per_centre_Feb25_Nov24 <- all_data %>%
+  group_by(Centre.ID.x) %>%
+  filter(Date.of.Assessment <= "2025-07-02"  & Date.of.Assessment > "2024-01-11") %>%
+  summarise(across(everything(), pcntMissing)) %>%
+  round(., digits = 2)
+write.csv(missing_data_per_centre_Feb25_Nov24, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/missing_data_per_centre_Feb25_Nov24.csv", row.names = FALSE, na = "")
+  
+missing_data_per_centre_Nov24_Nov23 <- all_data %>%
+  group_by(Centre.ID.x) %>%
+  filter(Date.of.Assessment <= "2024-01-11"  & Date.of.Assessment > "2023-01-11") %>%
+  summarise(across(everything(), pcntMissing)) %>%
+  round(., digits = 2)
+write.csv(missing_data_per_centre_Nov24_Nov23, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/missing_data_per_centre_Nov24_Nov23.csv", row.names = FALSE, na = "")
+
+missing_data_per_centre_Nov23_Nov22 <- all_data %>%
+  group_by(Centre.ID.x) %>%
+  filter(Date.of.Assessment <= "2023-01-11"  & Date.of.Assessment > "2022-01-11") %>%
+  summarise(across(everything(), pcntMissing)) %>%
+  round(., digits = 2)
+write.csv(missing_data_per_centre_Nov23_Nov22, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/missing_data_per_centre_Nov23_Nov22.csv", row.names = FALSE, na = "")
+
+missing_data_per_centre_before_Nov22 <- all_data %>%
+  group_by(Centre.ID.x) %>%
+  filter(Date.of.Assessment > "2022-01-11") %>%
+  summarise(across(everything(), pcntMissing)) %>%
+  round(., digits = 2)
+write.csv(missing_data_per_centre_before_Nov22, file = "C:/Users/md1rwe/Documents/Data extractions from I-CAH/Feb 2025/I-CAH_data_Feb_2025/outputs/all_data/missing_data_per_centre_before_Nov22.csv", row.names = FALSE, na = "")
+
+```
+
+
+
+
+
+
+
+Notes:
+- Duplicates in meds_wide and biomarkers have been identified based on their CO.ID assessment date. Duplicate candidates typically have different assessment IDs (which I assume     implies two separate entries were made to record the same visit). It is not deducible with 100% certainty which of the duplicate entries is the correct one. To avoid guess-work on this matter, I have removed all duplicated entries. A list of duplicated CO.ID assessment dates is available for both meds_wide and biomarker frames.
+
+
+
+
+
